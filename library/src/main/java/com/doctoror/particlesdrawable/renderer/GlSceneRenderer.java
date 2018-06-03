@@ -1,10 +1,8 @@
 package com.doctoror.particlesdrawable.renderer;
 
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Paint;
-import android.opengl.GLUtils;
+import android.opengl.GLES30;
+import android.opengl.Matrix;
 import android.support.annotation.ColorInt;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
@@ -16,7 +14,6 @@ import com.doctoror.particlesdrawable.util.LineColorResolver;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.FloatBuffer;
 import java.nio.ShortBuffer;
 
 import javax.microedition.khronos.opengles.GL10;
@@ -26,120 +23,61 @@ public final class GlSceneRenderer implements SceneRenderer {
     private static final int BYTES_PER_SHORT = 2;
     private static final int COORDINATES_PER_VERTEX = 2;
     private static final int COLOR_BYTES_PER_VERTEX = 4;
-    private static final int VERTICES_PER_PARTICLE = 6;
     private static final int VERTICES_PER_LINE = 2;
 
-    private final int[] textureHandle = new int[1];
+    private final float[] mMVPMatrix = new float[16];
+    private final float[] mProjectionMatrix = new float[16];
+    private final float[] mViewMatrix = new float[16];
+
+    private GlSceneRendererParticles particles;
 
     private ByteBuffer lineColorBuffer;
     private ShortBuffer lineCoordinatesBuffer;
-
-    private ShortBuffer particlesTrianglesCoordinates;
-    private ByteBuffer particlesTexturesCoordinates;
-
-    private volatile boolean textureDirty;
 
     private int lineCount;
 
     private GL10 gl;
 
     public void markTextureDirty() {
-        textureDirty = true;
-    }
-
-    @NonNull
-    private Bitmap generateParticleTexture(
-            @ColorInt final int color,
-            final float maxPointRadius) {
-        final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
-        paint.setColor(color);
-
-        final int size = (int) (maxPointRadius * 2f);
-        final Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_4444);
-        final Canvas canvas = new Canvas(bitmap);
-        canvas.drawCircle(maxPointRadius, maxPointRadius, maxPointRadius, paint);
-
-        return bitmap;
+        if (particles != null) {
+            particles.markTextureDirty();
+        }
     }
 
     public void setClearColor(
             @NonNull final GL10 gl,
             @ColorInt final int color) {
-        gl.glClearColor(
+        GLES30.glClearColor(
                 Color.red(color) / 255f,
                 Color.green(color) / 255f,
                 Color.blue(color) / 255f, 0f);
     }
 
     public void setupGl(@NonNull final GL10 gl) {
-        gl.glMatrixMode(GL10.GL_PROJECTION);
-        gl.glLoadIdentity();
-
-        gl.glEnable(GL10.GL_LINE_SMOOTH);
-        gl.glHint(GL10.GL_LINE_SMOOTH_HINT, GL10.GL_NICEST);
-
-        gl.glEnable(GL10.GL_BLEND);
-        gl.glBlendFunc(GL10.GL_SRC_ALPHA, GL10.GL_ONE_MINUS_SRC_ALPHA);
-
-        gl.glEnable(GL10.GL_TEXTURE_2D);
-
+        particles = new GlSceneRendererParticles();
         markTextureDirty();
-    }
-
-    private void generateAndLoadTexture(
-            @ColorInt final int color,
-            final float maxParticleRadius) {
-        final Bitmap texture = generateParticleTexture(color, maxParticleRadius);
-        loadParticleTexture(gl, texture);
-        texture.recycle();
-    }
-
-    private void reloadTextureIfDirty(
-            @ColorInt final int color,
-            final float maxParticleRadius) {
-        if (textureDirty) {
-            generateAndLoadTexture(color, maxParticleRadius);
-        }
     }
 
     public void setGl(@Nullable final GL10 gl) {
         this.gl = gl;
     }
 
-    private void loadParticleTexture(
-            @NonNull final GL10 gl,
-            @NonNull final Bitmap texture) {
-        gl.glDeleteTextures(1, textureHandle, 0);
-
-        gl.glGenTextures(1, textureHandle, 0);
-        gl.glBindTexture(GL10.GL_TEXTURE_2D, textureHandle[0]);
-
-        gl.glTexParameterf(GL10.GL_TEXTURE_2D, GL10.GL_TEXTURE_MIN_FILTER, GL10.GL_LINEAR);
-        gl.glTexParameterf(GL10.GL_TEXTURE_2D, GL10.GL_TEXTURE_MAG_FILTER, GL10.GL_LINEAR);
-
-        gl.glTexParameterf(GL10.GL_TEXTURE_2D, GL10.GL_TEXTURE_WRAP_S, GL10.GL_CLAMP_TO_EDGE);
-        gl.glTexParameterf(GL10.GL_TEXTURE_2D, GL10.GL_TEXTURE_WRAP_T, GL10.GL_CLAMP_TO_EDGE);
-
-        gl.glTexEnvf(GL10.GL_TEXTURE_ENV, GL10.GL_TEXTURE_ENV_MODE, GL10.GL_REPLACE);
-
-        GLUtils.texImage2D(GL10.GL_TEXTURE_2D, 0, texture, 0);
-
-        textureDirty = false;
-    }
-
     public void setDimensions(@NonNull final GL10 gl, final int width, final int height) {
-        gl.glViewport(0, 0, width, height);
-        gl.glOrthof(0, width, 0, height, 1, -1);
+        GLES30.glViewport(0, 0, width, height);
+
+        Matrix.orthoM(mProjectionMatrix, 0, 0f, width, 0f, height, 1, -1);
+
+        Matrix.setLookAtM(mViewMatrix, 0, 0f, 0f, 0f, 0f, 0f, -1f, 0f, 1f, 0f);
+        Matrix.multiplyMM(mMVPMatrix, 0, mProjectionMatrix, 0, mViewMatrix, 0);
     }
 
     public void recycle(@NonNull final GL10 gl) {
-        gl.glDeleteTextures(1, textureHandle, 0);
+        particles.recycle(gl);
     }
 
     private void initBuffers(final int vertexCount) {
         initLineBuffers(vertexCount);
-        initParticleTrianglesBuffer(vertexCount);
-        initParticleTexturesBuffer(vertexCount);
+        particles.initBuffers(vertexCount);
     }
 
     private void initLineBuffers(final int vertexCount) {
@@ -171,48 +109,18 @@ public final class GlSceneRenderer implements SceneRenderer {
         }
     }
 
-    private void initParticleTrianglesBuffer(final int vertexCount) {
-        final int floatcapacity = vertexCount * COORDINATES_PER_VERTEX * VERTICES_PER_PARTICLE;
-        if (particlesTrianglesCoordinates == null
-                || particlesTrianglesCoordinates.capacity() != floatcapacity) {
-            final ByteBuffer triangleShit = ByteBuffer.allocateDirect(floatcapacity * BYTES_PER_SHORT);
-            triangleShit.order(ByteOrder.nativeOrder());
-            particlesTrianglesCoordinates = triangleShit.asShortBuffer();
-        }
-    }
-
-    private void initParticleTexturesBuffer(final int vertexCount) {
-        final int capacity = vertexCount * COORDINATES_PER_VERTEX * VERTICES_PER_PARTICLE;
-        if (particlesTexturesCoordinates == null
-                || particlesTexturesCoordinates.capacity() != capacity) {
-            particlesTexturesCoordinates = ByteBuffer.allocateDirect(capacity);
-            particlesTexturesCoordinates.order(ByteOrder.nativeOrder());
-
-            for (int i = 0; i < capacity; i += VERTICES_PER_PARTICLE) {
-                particlesTexturesCoordinates.put((byte) 0);
-                particlesTexturesCoordinates.put((byte) 1);
-                particlesTexturesCoordinates.put((byte) 0);
-                particlesTexturesCoordinates.put((byte) 0);
-                particlesTexturesCoordinates.put((byte) 1);
-                particlesTexturesCoordinates.put((byte) 0);
-            }
-        }
-    }
-
     @Override
     public void drawScene(
             @NonNull final ParticlesScene scene) {
-        gl.glLineWidth(scene.getLineThickness());
+        GLES30.glLineWidth(scene.getLineThickness());
 
         initBuffers(scene.getNumDots());
-        reloadTextureIfDirty(scene.getDotColor(), scene.getMaxDotRadius());
-        resolveLines(scene);
-        resolveParticleTriangles(scene);
+        //resolveLines(scene);
 
-        gl.glClear(GL10.GL_COLOR_BUFFER_BIT | GL10.GL_DEPTH_BUFFER_BIT);
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT | GLES30.GL_DEPTH_BUFFER_BIT);
 
-        drawLines();
-        drawParticles(scene.getNumDots());
+        //drawLines();
+        particles.drawScene(mMVPMatrix, scene);
     }
 
     private void resolveLines(@NonNull final ParticlesScene scene) {
@@ -291,53 +199,5 @@ public final class GlSceneRenderer implements SceneRenderer {
 
         gl.glDisableClientState(GL10.GL_VERTEX_ARRAY);
         gl.glDisableClientState(GL10.GL_COLOR_ARRAY);
-    }
-
-    private void resolveParticleTriangles(@NonNull final ParticlesScene scene) {
-        final FloatBuffer coordinates = scene.getCoordinates();
-        coordinates.position(0);
-
-        final FloatBuffer radiuses = scene.getRadiuses();
-        radiuses.position(0);
-
-        particlesTrianglesCoordinates.clear();
-
-        final int count = scene.getNumDots();
-        for (int i = 0; i < count; i++) {
-            final float particleRadius = radiuses.get();
-
-            final float coordX = coordinates.get() - particleRadius;
-            final float coordY = coordinates.get() - particleRadius;
-
-            final float particleSize = particleRadius * 2f;
-            particlesTrianglesCoordinates.put((short) coordX);
-            particlesTrianglesCoordinates.put((short) coordY);
-            particlesTrianglesCoordinates.put((short) (coordX + particleSize));
-            particlesTrianglesCoordinates.put((short) coordY);
-            particlesTrianglesCoordinates.put((short) (coordX + particleSize));
-            particlesTrianglesCoordinates.put((short) (coordY + particleSize));
-
-            particlesTrianglesCoordinates.put((short) coordX);
-            particlesTrianglesCoordinates.put((short) coordY);
-            particlesTrianglesCoordinates.put((short) coordX);
-            particlesTrianglesCoordinates.put((short) (coordY + particleSize));
-            particlesTrianglesCoordinates.put((short) (coordX + particleSize));
-            particlesTrianglesCoordinates.put((short) (coordY + particleSize));
-        }
-    }
-
-    private void drawParticles(final int count) {
-        gl.glEnableClientState(GL10.GL_VERTEX_ARRAY);
-        gl.glEnableClientState(GL10.GL_TEXTURE_COORD_ARRAY);
-
-        particlesTexturesCoordinates.position(0);
-        particlesTrianglesCoordinates.position(0);
-
-        gl.glTexCoordPointer(2, GL10.GL_BYTE, 0, particlesTexturesCoordinates);
-        gl.glVertexPointer(2, GL10.GL_SHORT, 0, particlesTrianglesCoordinates);
-        gl.glDrawArrays(GL10.GL_TRIANGLES, 0, count * VERTICES_PER_PARTICLE);
-
-        gl.glDisableClientState(GL10.GL_TEXTURE_COORD_ARRAY);
-        gl.glDisableClientState(GL10.GL_VERTEX_ARRAY);
     }
 }
